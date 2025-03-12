@@ -1,18 +1,22 @@
-package io.arex.inst.jedis.v2;
+package io.arex.inst.jedis.april;
 
 import io.arex.agent.bootstrap.model.MockResult;
 import io.arex.agent.bootstrap.util.ArrayUtils;
+import io.arex.inst.redis.common.RedisExtractor;
+import io.arex.inst.redis.common.RedisKeyUtil;
 import io.arex.inst.runtime.context.ContextManager;
 import io.arex.inst.runtime.context.RepeatedCollectManager;
 import io.arex.inst.runtime.serializer.Serializer;
-import io.arex.inst.redis.common.RedisExtractor;
-import io.arex.inst.redis.common.RedisKeyUtil;
 import redis.clients.jedis.Jedis;
+import redis.clients.jedis.params.SetParams;
 
 import javax.net.ssl.HostnameVerifier;
 import javax.net.ssl.SSLParameters;
 import javax.net.ssl.SSLSocketFactory;
-import java.util.*;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.Callable;
 
 public class JedisWrapper extends Jedis {
@@ -31,23 +35,33 @@ public class JedisWrapper extends Jedis {
     }
 
     @Override
-    public String set(String key, String value) {
-        return this.call("set", key, () -> super.set(key, value), null);
+    public String set(String key, String value, SetParams params) {
+        return this.call("set", key, () -> super.set(key, value, params), null);
     }
 
-    @Override
-    public String set(String key, String value, String expx, long time) {
-        return this.call("set", key, () -> super.set(key, value, expx, time), null);
-    }
-
-    @Override
-    public String set(String key, String value, String nxxx, String expx, long time) {
-        return this.call("set", key, () -> super.set(key, value, nxxx, expx, time), null);
+    public String set(String key,String value) {
+        return call("set", key, value, () -> super.set(key, value), null);
     }
 
     @Override
     public String get(String key) {
         return call("get", key, () -> super.get(key), null);
+    }
+
+    public Set<String> smembers(String key) {
+        return call("smembers", key, () -> super.smembers(key), Collections.EMPTY_SET);
+    }
+
+    public Long serm(String key,String ... members) {
+        return call("srem", key, RedisKeyUtil.generate(members), () -> super.srem(key, members), -1L);
+    }
+
+    public Long sadd(String key,String ... members) {
+        return call("sadd", key, RedisKeyUtil.generate(members), () -> super.sadd(key, members), -1L);
+    }
+
+    public Long scard(String key,String ... members) {
+        return call("scard", key, RedisKeyUtil.generate(members), () -> super.scard(key), -1L);
     }
 
     @Override
@@ -389,6 +403,13 @@ public class JedisWrapper extends Jedis {
                 () -> super.getrange(key, startOffset, endOffset), null);
     }
 
+    public Long zadd(String key, double score, String member) {
+        return call("zadd", key, RedisKeyUtil.generate("score", String.valueOf(score), "member", member),
+                () -> super.zadd(key, score, member), 0L);
+    }
+
+
+
     @Override
     public Long pexpire(String key, long milliseconds) {
         return call("pexpire", key, () -> super.pexpire(key, milliseconds), 0L);
@@ -412,16 +433,6 @@ public class JedisWrapper extends Jedis {
     @Override
     public String set(final byte[] key, final byte[] value) {
         return call("set", key, () -> super.set(key, value), null);
-    }
-
-    @Override
-    public String set(byte[] key, byte[] value, byte[] nxxx, byte[] expx, long time) {
-        return call("set", key, () -> super.set(key, value, nxxx, expx, time), null);
-    }
-
-    @Override
-    public String set(byte[] key, byte[] value, byte[] expx, long time) {
-        return call("set", key, () -> super.set(key, value, expx, time), null);
     }
 
     @Override

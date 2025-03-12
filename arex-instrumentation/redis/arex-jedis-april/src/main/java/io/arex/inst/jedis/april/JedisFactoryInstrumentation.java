@@ -1,4 +1,4 @@
-package io.arex.inst.jedis.v2;
+package io.arex.inst.jedis.april;
 
 import io.arex.inst.extension.MethodInstrumentation;
 import io.arex.inst.extension.TypeInstrumentation;
@@ -24,7 +24,7 @@ public class JedisFactoryInstrumentation extends TypeInstrumentation {
 
     @Override
     protected ElementMatcher<TypeDescription> typeMatcher() {
-        return named("redis.clients.jedis.JedisFactory");
+        return named("com.didi.sec.april.redis.MonitoringJedisFactory");
     }
 
     @Override

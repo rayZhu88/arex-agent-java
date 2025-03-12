@@ -83,7 +83,7 @@
         </dependency>
         <dependency>
             <groupId>${project.groupId}</groupId>
-            <artifactId>arex-jedis-v2</artifactId>
+            <artifactId>arex-jedis-april</artifactId>
             <version>${project.version}</version>
         </dependency>
         <dependency>
