@@ -40,13 +40,32 @@ public class InstrumentationInstaller extends BaseAgentInstaller {
         super(inst, agentFile, agentArgs);
     }
 
+    /**
+     * 首次插桩主流程：
+     * 1. 通过 SPI 加载并注册所有 ModuleInstrumentation 插桩模块（如 httpclient、redis、dubbo 等），
+     *    对目标类和方法进行字节码增强（Advice）。
+     * 2. 通过 SPI 加载并注册所有 ExtensionTransformer 扩展插件，增强扩展性。
+     * 3. 打印日志，标记首次插桩完成，便于排查和监控。
+     */
     @Override
     protected void transform() {
+        // 1. 注册所有 ModuleInstrumentation 插桩模块，返回可重置的 transformer
         resettableClassFileTransformer = install(getAgentBuilder(), false);
+        // 2. 注册所有 ExtensionTransformer 扩展插桩
         extensionTransform();
+        // 3. 打印日志，标记首次插桩完成
         LOGGER.info("[AREX] Agent first transform class successfully.");
     }
 
+    /**
+     * 动态 retransform 主流程：
+     * 1. 先重置所有需要还原的类，确保后续增强不会叠加冲突。
+     * 2. 获取所有需要 retransform 的动态类（如配置变更、插件热更新等）。
+     * 3. 清理无效操作记录，保证增强环境干净。
+     * 4. 移除旧的 transformer，避免重复增强。
+     * 5. 以 retransform 模式重新注册所有插桩模块，对目标类重新做字节码增强。
+     * 6. 打印日志，标记 retransform 完成，便于排查和监控。
+     */
     @Override
     protected void retransform() {
         resetClass();
@@ -106,6 +125,7 @@ public class InstrumentationInstaller extends BaseAgentInstaller {
         }
     }
 
+    // 遍历所有 ModuleInstrumentation 插桩模块，依次注册到 AgentBuilder
     private ResettableClassFileTransformer install(AgentBuilder builder, boolean retransform) {
         List<ModuleInstrumentation> list = ServiceLoader.load(ModuleInstrumentation.class);
 
@@ -113,21 +133,26 @@ public class InstrumentationInstaller extends BaseAgentInstaller {
             builder = installModule(builder, module, retransform);
         }
 
+        // 安装到 JVM，返回可重置的 transformer
         return builder.installOn(this.instrumentation);
     }
 
+    // 注册单个模块的所有类型插桩
     private AgentBuilder installModule(AgentBuilder builder, ModuleInstrumentation module, boolean retransform) {
         String moduleName = module.getName();
+        // 过滤禁用模块
         if (disabledModule(moduleName)) {
             LOGGER.warn("[arex] filtered disabled instrumentation module: {}", moduleName);
             return builder;
         }
 
+        // 过滤无内容模块
         if (CollectionUtil.isEmpty(module.instrumentationTypes())) {
             LOGGER.warn("[arex] filtered empty instrumentation module: {}", moduleName);
             return builder;
         }
 
+        // 首次注册或 retransformation 场景，注册所有类型插桩
         if (!retransform) {
             LOGGER.info("[arex] first transform instrumentation module: {}", moduleName);
             return installTypes(builder, module, module.instrumentationTypes());
@@ -140,37 +165,45 @@ public class InstrumentationInstaller extends BaseAgentInstaller {
         return builder;
     }
 
+    // 注册模块下所有类型的插桩
     private AgentBuilder installTypes(AgentBuilder builder, ModuleInstrumentation module, List<TypeInstrumentation> types) {
         for (TypeInstrumentation inst : types) {
             builder = installType(builder, module.matcher(), inst);
         }
-
         return builder;
     }
 
+    // 注册单个类型的插桩（如某个类的所有方法增强）
     private AgentBuilder installType(AgentBuilder builder, ElementMatcher<ClassLoader> moduleMatcher,
         TypeInstrumentation type) {
+        // 1. 通过 matcher 匹配目标类
         AgentBuilder.Identified identified = builder.type(type.matcher(), moduleMatcher);
+        // 2. 如果有类级别的 transformer，先应用
         AgentBuilder.Transformer transformer = type.transformer();
         if (transformer != null) {
             identified = identified.transform(transformer);
         }
-
+        // 3. 注册所有方法级别的 Advice
         List<MethodInstrumentation> methodAdvices = type.methodAdvices();
         if (CollectionUtil.isEmpty(methodAdvices)) {
             return (AgentBuilder) identified;
         }
-
         AgentBuilder.Identified.Extendable extBuilder = installMethod(identified, methodAdvices.get(0));
         for (int i = 1; i < methodAdvices.size(); i++) {
             extBuilder = installMethod(extBuilder, methodAdvices.get(i));
         }
-
         return extBuilder;
     }
 
+    // 注册方法级别的 Advice（增强逻辑）
     private AgentBuilder.Identified.Extendable installMethod(AgentBuilder.Identified builder,
         MethodInstrumentation method) {
+        // 注意：
+        // 1. 虽然 AgentClassLoader 的父加载器是 AppClassLoader，按双亲委派模型 AppClassLoader 加载不到 agent 的类。
+        // 2. 但在注册 Advice 时，agent/ByteBuddy 会通过 include(AgentClassLoader) 显式指定 Advice 类的加载器。
+        // 3. 这样，JVM 在执行 Advice 相关字节码时，会直接用 AgentClassLoader 去加载 Advice 类，
+        //    而不是只依赖目标类的 classloader（如 AppClassLoader）。
+        // 4. 这打破了传统的父子委派限制，实现了 agent 逻辑和业务代码的解耦与隔离。
         return builder.transform(new AgentBuilder.Transformer.ForAdvice()
                         .include(InstrumentationHolder.getAgentClassLoader())
                         .advice(method.getMethodMatcher(), method.getAdviceClassName())

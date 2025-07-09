@@ -32,11 +32,25 @@ import java.util.stream.Stream;
 
 import static io.arex.agent.bootstrap.constants.ConfigConstants.*;
 
+/**
+ * ConfigManager 负责管理 agent 的所有配置项，包括本地配置文件加载、远程配置服务拉取、
+ * 配置变更监听与通知等，是配置链路的核心控制器。
+ * 
+ * 主要功能：
+ * 1. 启动时加载本地配置和系统属性
+ * 2. 支持远程配置服务（如 Apollo）动态下发和热更新
+ * 3. 变更后自动通知所有注册的 ConfigListener
+ * 4. 提供配置项的统一访问接口
+ */
 public class ConfigManager {
 
+    // agent 日志记录器
     private static final AgentLogger LOGGER = AgentLoggerFactory.getAgentLogger(ConfigManager.class);
+    // ConfigManager 单例，保证全局唯一
     public static final ConfigManager INSTANCE = new ConfigManager();
+    // 标记是否首次插桩
     public static final AtomicBoolean FIRST_TRANSFORM = new AtomicBoolean(false);
+    // 默认采样率
     private static final int DEFAULT_RECORDING_RATE = 1;
     private boolean enableDebug;
     private String agentVersion;
@@ -65,13 +79,24 @@ public class ConfigManager {
     private Map<String, String> extendField;
     private int bufferSize;
 
+    /**
+     * 构造方法：
+     * 1. 初始化系统属性和默认配置
+     * 2. 加载配置监听器（SPI 机制）
+     * 3. 读取本地配置文件
+     * 4. 构建并发布运行时配置
+     */
     private ConfigManager() {
-        init();
-        initConfigListener();
-        readConfigFromFile(configPath);
-        updateRuntimeConfig();
+        init(); // 步骤1：初始化系统属性和默认配置
+        initConfigListener(); // 步骤2：加载配置监听器
+        readConfigFromFile(configPath); // 步骤3：读取本地配置文件
+        updateRuntimeConfig(); // 步骤4：构建并发布运行时配置
     }
 
+    /**
+     * 通过 SPI 机制加载所有实现了 ConfigListener 的监听器，
+     * 用于后续配置变更时的通知。
+     */
     private void initConfigListener() {
         listeners = ServiceLoader.load(ConfigListener.class);
     }
@@ -274,17 +299,20 @@ public class ConfigManager {
         setBufferSize(System.getProperty(BUFFER_SIZE, "1024"));
     }
 
-    @VisibleForTesting
+    /**
+     * 读取本地配置文件（如 arex.agent.conf），并设置到系统属性和成员变量。
+     * 支持覆盖部分默认配置。
+     * @param configPath 配置文件路径
+     */
     void readConfigFromFile(String configPath) {
         if (StringUtil.isEmpty(configPath)) {
             return;
         }
-
         Map<String, String> configMap = parseConfigFile(configPath);
         if (configMap.isEmpty()) {
             return;
         }
-
+        // 依次设置各项配置
         setEnableDebug(configMap.get(ENABLE_DEBUG));
         setServiceName(configMap.get(SERVICE_NAME));
         setStorageServiceHost(configMap.get(STORAGE_SERVICE_HOST));
@@ -345,6 +373,10 @@ public class ConfigManager {
         updateRuntimeConfig();
     }
 
+    /**
+     * 从远程配置服务（如 Apollo）下发的配置响应体，动态刷新本地配置。
+     * @param serviceConfig 远程下发的配置响应体
+     */
     public void updateConfigFromService(ResponseBody serviceConfig) {
         ServiceCollectConfig config = serviceConfig.getServiceCollectConfiguration();
         setRecordRate(config.getSampleRate());
@@ -356,10 +388,15 @@ public class ConfigManager {
         setAgentEnabled(serviceConfig.isAgentEnabled());
         setExtendField(serviceConfig.getExtendField());
         setMessage(serviceConfig.getMessage());
-
+        // 刷新运行时配置并通知监听器
         updateRuntimeConfig();
     }
 
+    /**
+     * 构建并发布最新的运行时配置对象 Config，
+     * 并通知所有注册的 ConfigListener 监听器。
+     * 该方法在本地/远程配置变更后都会调用。
+     */
     private void updateRuntimeConfig() {
         Map<String, String> configMap = new HashMap<>();
         configMap.put(DYNAMIC_RESULT_SIZE_LIMIT, String.valueOf(getDynamicResultSizeLimit()));
@@ -377,7 +414,7 @@ public class ConfigManager {
             setEnableDebug(extendFieldMap.get(ENABLE_DEBUG));
             appendCoveragePackages(extendFieldMap.get(COVERAGE_PACKAGES));
         }
-
+        // 构建 Config 对象并发布
         ConfigBuilder.create(getServiceName())
             .enableDebug(isEnableDebug())
             .addProperties(configMap)
@@ -396,18 +433,30 @@ public class ConfigManager {
         System.setProperty(COVERAGE_PACKAGES, collectCoveragePackages);
     }
 
+    /**
+     * 通知所有注册的 ConfigListener，配置已变更。
+     * @param config 最新的 Config 对象
+     */
     private void publish(Config config) {
         for (ConfigListener listener : listeners) {
             listener.load(config);
         }
     }
 
+    /**
+     * 设置配置失效（如远程下发异常时），采样率和工作日全部置零，
+     * 并刷新运行时配置，通知所有监听器。
+     */
     public void setConfigInvalid() {
         setRecordRate(0);
         setAllowDayOfWeeks(0);
         updateRuntimeConfig();
     }
 
+    /**
+     * 判断当前存储模式是否为本地模式
+     * @return true-本地存储，false-远程存储
+     */
     public boolean isLocalStorage() {
         return STORAGE_MODE.equalsIgnoreCase(storageServiceMode);
     }
@@ -484,10 +533,18 @@ public class ConfigManager {
         System.setProperty(ALLOW_TIME_TO, allowTimeOfDayTo);
     }
 
+    /**
+     * 判断当前是否在允许的工作时间段内（根据配置的工作日和时间段）
+     * @return true-在工作时间内，false-不在
+     */
     public boolean inWorkingTime() {
         return nextWorkTime() <= 0L;
     }
 
+    /**
+     * 计算距离下一个工作时间的毫秒数
+     * @return 距离下一个工作时间的毫秒数，0表示当前在工作时间内
+     */
     private long nextWorkTime() {
         LocalDateTime dateTime = LocalDateTime.now();
         LocalTime beginTime = dateTime.toLocalTime();

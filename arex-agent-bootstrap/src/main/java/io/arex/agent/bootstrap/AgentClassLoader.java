@@ -18,37 +18,27 @@ import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
 
 /**
- * AgentClassLoader
- *
- * <p>
- * arex-agent（AppClassLoader）
- * <p>
- * arex-agent-bootstrap (BootstrapClassLoader)
- * <p>
- * arex-agent-core (AgentClassLoader)
- * <p>
- * arex-instrumentation (UserClassLoader)
- * <p>
- * ----XXX Instrumentation & Module & Advice (AgentClassLoader)
- * <p>
- * arex-instrumentation-api
- * <p>
- * ----extension (AgentClassLoader)
- * <p>
- * ----runtime （AppClassLoader）
- * <p>
- * arex-instrumentation-foundation (AgentClassLoader)， backend
+ * AgentClassLoader 是 arex-agent 的专用类加载器，核心作用：
+ * 1. 实现 agent 及其扩展 jar 的类隔离，避免与业务代码冲突。
+ * 2. 支持插件式扩展，extensions 目录下的 jar 会自动加载。
+ * 3. 优先自身加载，最后才委托父加载器，保证 agent 依赖的独立性。
+ * 4. 提升多线程加载类的性能和安全性。
+ * 5. 是 Java Agent 领域的通用最佳实践。
  */
 public class AgentClassLoader extends URLClassLoader {
 
     static {
+        // 注册为并行 capable，提升多线程加载类时的安全性和性能
         ClassLoader.registerAsParallelCapable();
     }
 
+    // agent jar 的信息
     private JarInfo agentJarInfo;
     private JarFile agentJarFile;
+    // 扩展 jar 的信息列表
     private List<JarInfo> extensionJarFiles;
 
+    // 构造方法，接收 agent jar、父加载器、扩展 jar
     public AgentClassLoader(File jarFile, ClassLoader parent, File[] extensionJars) {
         super(new URL[]{}, parent);
 
@@ -56,6 +46,7 @@ public class AgentClassLoader extends URLClassLoader {
             this.agentJarFile = new JarFile(jarFile, false);
             agentJarInfo = new JarInfo(agentJarFile, jarFile);
             extensionJarFiles = getExtensionJarFiles(extensionJars);
+            // 将扩展 jar 的 URL 加入到 URLClassLoader 路径
             for (JarInfo jarInfo : extensionJarFiles) {
                 super.addURL(jarInfo.getSourceFile().toURI().toURL());
             }
@@ -64,13 +55,12 @@ public class AgentClassLoader extends URLClassLoader {
         }
     }
 
+    // 加载扩展 jar 的信息
     private List<JarInfo> getExtensionJarFiles(File[] extensionFiles) {
         if (extensionFiles == null) {
             return Collections.emptyList();
         }
-
         List<JarInfo> jarFiles = new ArrayList<>(extensionFiles.length);
-
         for (File file : extensionFiles) {
             try {
                 JarInfo jarInfo = new JarInfo(new JarFile(file, false), file);
@@ -79,35 +69,38 @@ public class AgentClassLoader extends URLClassLoader {
                 System.err.printf("Add extension file failed, file: %s%n", file.getAbsolutePath());
             }
         }
-
         return jarFiles;
     }
 
+    // 重写 loadClass，优先自身加载，找不到再委托父加载器
     @Override
     public Class<?> loadClass(String name, boolean resolve) throws ClassNotFoundException {
         synchronized (getClassLoadingLock(name)) {
+            // 1. 先查找已加载类
             Class<?> clazz = findLoadedClass(name);
             if (clazz == null) {
+                // 2. 再尝试自身 findClass
                 clazz = findClass(name);
             }
-
             if (clazz == null) {
+                // 3. 最后委托父加载器
                 clazz = super.loadClass(name, false);
             }
             if (resolve) {
                 resolveClass(clazz);
             }
-
             return clazz;
         }
     }
 
+    // 自定义查找 class 的逻辑
     @Override
     protected Class<?> findClass(String name) throws ClassNotFoundException {
+        // 某些 runtime 包名直接跳过
         if (StringUtil.startWithFrom(name, "runtime", 13)) {
             return null;
         }
-
+        // 查找 agent jar 和扩展 jar 里的 class
         JarEntryInfo jarEntryInfo = findJarEntry(name.replace('.', '/') + ".class");
         if (jarEntryInfo != null && jarEntryInfo.getJarEntry() != null) {
             byte[] bytes;
@@ -116,8 +109,9 @@ public class AgentClassLoader extends URLClassLoader {
             } catch (IOException exception) {
                 throw new ClassNotFoundException(name, exception);
             }
-
+            // 定义 package 信息
             definePackageIfNeeded(jarEntryInfo, name);
+            // 定义 class
             return defineClass(name, bytes);
         }
         return null;

@@ -32,17 +32,23 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BiConsumer;
 import java.util.function.BiFunction;
 
-@AutoService(DataCollector.class)
+// DataCollectorService 单例
 public class DataCollectorService implements DataCollector {
+    // DataCollectorService 单例
     public static final DataCollectorService INSTANCE = new DataCollectorService();
 
+    // 采集数据异步上报线程池，单线程，防止并发写入顺序错乱
     final ThreadPoolExecutor executor = new ThreadPoolExecutor(1, 1, 15,
             TimeUnit.MINUTES, new LinkedBlockingQueue<>(), new ThreadFactoryImpl("data-save-handler"));
 
+    // 本地 Mock 数据缓冲队列，防止直接阻塞业务线程
     private MockEntityBuffer buffer = null;
+    // 后台批量上报任务的 Future
     private Future<?> executeFuture = null;
+    // 是否已初始化标志
     private final AtomicBoolean initialized = new AtomicBoolean(false);
 
+    // 后端接口地址
     private static String queryApiUrl;
     private static String saveApiUrl;
     private static String invalidCaseApiUrl;
@@ -52,13 +58,19 @@ public class DataCollectorService implements DataCollector {
         initServiceHost();
     }
 
+    /**
+     * 保存采集到的 Mock 数据，先进入本地缓冲队列，由后台线程异步批量上报。
+     * 健康异常时（如队列溢出）会自动降级采样速率。
+     */
     @Override
     public void save(List<Mocker> mockerList) {
         if (HealthManager.isFastRejection()) {
+            // 健康异常，直接丢弃采集，防止影响业务
             return;
         }
         DataEntity entity = new DataEntity(mockerList);
         if (!buffer.put(entity)) {
+            // 队列溢出，触发降级
             HealthManager.onEnqueueRejection();
             CaseManager.invalid(entity.getRecordId(), null,
                     entity.getOperationName(), DecelerateReasonEnum.QUEUE_OVERFLOW.getValue());
@@ -96,6 +108,10 @@ public class DataCollectorService implements DataCollector {
         }
     }
 
+    /**
+     * 启动后台批量上报线程，循环从本地队列取数据并上报到后端。
+     * 健康异常时自动降速，保障业务稳定。
+     */
     private void loop() {
         while (true) {
             try {
@@ -129,6 +145,10 @@ public class DataCollectorService implements DataCollector {
 
     private static final String MOCK_STRATEGY = "X-AREX-Mock-Strategy-Code";
 
+    /**
+     * 批量上报 Mock 数据到 AREX 后台，采用异步 HTTP+压缩，提升吞吐。
+     * 上报失败会触发健康降级。
+     */
     void saveData(DataEntity entity) {
         if (entity == null || CaseManager.isInvalidCase(entity.getRecordId())) {
             return;

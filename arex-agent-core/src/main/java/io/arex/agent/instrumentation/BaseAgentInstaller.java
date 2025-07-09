@@ -39,14 +39,26 @@ public abstract class BaseAgentInstaller implements AgentInstaller {
         this.agentArgs = agentArgs;
     }
 
+    /**
+     * agent 安装主流程：
+     * - 支持定时刷新配置和热更新，保证 agent 能动态适应环境变化。
+     * - 首次 transform 时初始化所有依赖组件，后续支持 retransform 动态增强。
+     * - debug 模式下自动 dump 增强后的字节码，便于开发排查。
+     * - 通过 SPI 加载数据采集器等插件，增强扩展性。
+     * - 关键节点自动上报 agent 状态，便于监控和健康管理。
+     */
     @Override
     public void install() {
+        // 保存当前线程的上下文类加载器
         ClassLoader savedContextClassLoader = Thread.currentThread().getContextClassLoader();
         try {
+            // 切换为 agent 的类加载器，保证后续 SPI 加载等都在 agent classloader 下
             Thread.currentThread().setContextClassLoader(getClassLoader());
+            // 注册 JVM 关闭钩子，优雅关闭 agent
             Runtime.getRuntime().addShutdownHook(new Thread(ConfigService.INSTANCE::shutdown, "arex-agent-shutdown-hook"));
-            // Timed load config for dynamic retransform
+            // 加载 agent 配置，返回定时刷新配置的间隔（分钟）
             long delayMinutes = ConfigService.INSTANCE.loadAgentConfig(agentArgs);
+            // 检查 agent 是否允许启动（如配置合法、开关打开等）
             if (!allowStartAgent()) {
                 ConfigService.INSTANCE.reportStatus();
                 if (!ConfigManager.FIRST_TRANSFORM.get()) {
@@ -55,21 +67,29 @@ public abstract class BaseAgentInstaller implements AgentInstaller {
                 return;
             }
 
+            // 如果需要定时刷新配置，启动定时任务
             if (delayMinutes > 0 && loadConfigTask == null) {
                 loadConfigTask = TimerService.scheduleAtFixedRate(this::install, delayMinutes, delayMinutes, TimeUnit.MINUTES);
                 timedReportStatus();
             }
 
+            // 首次 transform，还是 retransform（动态增强）
             if (ConfigManager.FIRST_TRANSFORM.compareAndSet(false, true)) {
+                // 初始化依赖组件（如 TraceContext、RecordLimiter、DataCollector 等）
                 initDependentComponents();
+                // 如果开启 debug，创建字节码 dump 目录
                 createDumpDirectory();
+                // 执行 transform（首次插桩，抽象方法由子类实现）
                 transform();
             } else {
+                // 非首次，执行 retransform（动态增强，抽象方法由子类实现）
                 retransform();
             }
 
+            // 上报 agent 状态
             ConfigService.INSTANCE.reportStatus();
         } finally {
+            // 恢复线程原有的上下文类加载器
             Thread.currentThread().setContextClassLoader(savedContextClassLoader);
         }
     }
@@ -89,6 +109,12 @@ public abstract class BaseAgentInstaller implements AgentInstaller {
         return "invalid config";
     }
 
+    /**
+     * 定时上报 agent 状态，并检测配置变更，支持热更新。
+     * 每分钟执行一次：
+     * - 上报 agent 状态
+     * - 检查配置文件是否有变更，有变更则重新 install
+     */
     private void timedReportStatus() {
         if (reportStatusTask != null) {
             return;
@@ -106,11 +132,21 @@ public abstract class BaseAgentInstaller implements AgentInstaller {
         }, 1, 1, TimeUnit.MINUTES);
     }
 
+    /**
+     * 初始化 agent 依赖的核心组件：
+     * - TraceContextManager：链路追踪上下文，采集本机 IP
+     * - RecordLimiter：采集限流器，结合健康管理
+     * - DataCollector：通过 SPI 加载所有数据采集器，注册到 DataService
+     */
     private void initDependentComponents() {
         TraceContextManager.init(NetUtils.getIpAddress());
         RecordLimiter.init(HealthManager::acquire);
         initDataCollector();
     }
+
+    /**
+     * 通过 SPI 加载所有数据采集器，并注册到 DataService，增强扩展性。
+     */
     private void initDataCollector() {
         List<DataCollector> collectorList = ServiceLoader.load(DataCollector.class, getClassLoader());
         DataService.setDataCollector(collectorList);
@@ -131,6 +167,9 @@ public abstract class BaseAgentInstaller implements AgentInstaller {
         return getClass().getClassLoader();
     }
 
+    /**
+     * 如果开启 debug，会将所有被增强的字节码 class 文件 dump 到指定目录，便于开发和排查问题。
+     */
     private void createDumpDirectory() {
         if (!ConfigManager.INSTANCE.isEnableDebug()) {
             return;

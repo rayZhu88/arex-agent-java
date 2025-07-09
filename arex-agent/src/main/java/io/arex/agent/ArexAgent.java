@@ -32,11 +32,14 @@ public class ArexAgent {
 
     private static void init(Instrumentation inst, String agentArgs) {
         try {
+            // 打印 agent 的启动信息（如版本号、启动时间等），方便在控制台或日志中追踪 agent 的加载情况，便于排查 agent 是否被正确加载、版本是否一致等问题。
             printAgentInfo();
             /*
-             * The jars that need to be added to the bootstrap classloader
-             * are packaged in the /bootstrap directory inside the arex-agent.jar package.
-             * These jars should be added to the bootstrap classloader in advance.
+             * 将 arex-agent.jar 包内 /bootstrap 目录下的 jar 包，动态加载到 JVM 的 bootstrap classloader。
+             * 这样做的目的是：
+             * 1. 某些 agent 的核心类/工具类需要在所有 classloader 下都可见，必须放到 bootstrap classloader。
+             * 2. 避免类冲突、ClassNotFound 等问题，保证 agent 的核心功能在所有 classloader 下都能正常工作。
+             * 实现方式：会提取 agent 包内嵌的 bootstrap jar 文件，然后通过 Instrumentation.appendToBootstrapClassLoaderSearch 方法动态加载。
              */
             installBootstrapJar(inst);
             AgentInitializer.initialize(inst, getJarFile(ArexAgent.class), agentArgs, ArexAgent.class.getClassLoader());
